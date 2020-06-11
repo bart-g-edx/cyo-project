@@ -1,0 +1,1045 @@
+---
+title: "CYO project: Obesity and Macronutrients"
+author: "bart-g"
+date: "6/10/2020"
+output:
+  pdf_document:
+    fig_caption: yes
+    toc: yes
+    toc_depth: 3
+  html_document: default
+---
+
+```{r prerequisite, echo=FALSE, include=FALSE, warning=FALSE, results='hide'}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(gam)) install.packages("gam", repos = "http://cran.us.r-project.org")
+if(!require(gbm)) install.packages("gbm", repos = "http://cran.us.r-project.org")
+if(!require(timeDate)) install.packages("timeDate", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+knitr::opts_chunk$set(echo = TRUE) 
+```
+
+
+## 1. Overview
+
+### Goal
+
+The goal of this project is to explain obesity, as defined by percentage 
+of high BMI individuals in society (body-mass-index), using macronutrients' supply 
+in all countries available.
+
+### Methods
+
+Regression methods used in the study:
+
+- k-Nearest Neighbors,
+
+- General Additive Model using Splines,
+
+- General Additive Model using Loess,
+
+- Stochastic Gradient Boosting
+
+Computational environment, as used by author:
+
+- Windows 10 OS,
+
+- Intel i5 CPU,
+
+- 8 GBs of RAM,
+
+- Microsoft R Open distribution was used (improved performance considerations)
+
+Minimum memory requirement is 4GB.
+Expected computation time was 10 minutes on author's desktop PC.
+
+### Definitions
+
+(1) Macronutrient
+
+Macronutrients, the vital substances, necessary for organism to survive are
+
+included as independent variables:
+
+- plant proteins,
+
+- animal proteins,
+
+- fats,
+
+- carbonhydrates.
+
+Water, though being a macronutrient was not included in the research.
+
+Macronutrient variables are defined as supply of kilo calories (kcal) 
+per day per person, sampled annually. 
+
+Notion of supply does mean availability of the macronutrient however doesn't 
+
+measure the factual intake of calories. Yet, food supply, when categorised with
+
+macronutrients, offers the insight of growing intake potential of energy (calories).
+
+When intake is not met by balanced expenditure of energy, we observe growing figures of
+
+obesity in our societies. 
+
+Which, brings to the idea of capturing overweight and obesity at extreme.
+
+(2) Body mass index
+
+Body mass index (BMI) is defined as:
+
+$$BMI = \frac{weight [kg] }{height^2 [m^2] }$$
+
+People of BMI < 25 are considered normal,
+
+those with BMI < 30 overweight,
+
+whereas BMI >= 30 indicates obesity.
+
+#### Is BMI the right measure?
+
+Its definition can be questioned, since weight to height ratio isn't exactly 
+explaining body fat ratio. Secondary shortcomings, the lack of age and gender 
+differentation are not part of the BMI model. 
+For instance, women typically have higher body fat percentage than men for the same BMI.
+Another aspect, considering professional sports, is the higher weight of muscle mass 
+which exaggerates BMI score for actually healthy individuals, 
+carrying less fat tissue thank others.
+
+### Source of data
+
+Set 1: **Share of obese adults per country**
+
+<https://ourworldindata.org/obesity#13-of-adults-in-the-world-are-obese>
+
+Sampling period: 1975-2016.
+
+Availability: local file in csv format
+
+File name: share-of-adults-defined-as-obese.csv
+
+
+Set 2: **Diet compositions by macronutrient per country**
+
+<https://ourworldindata.org/diet-compositions#diet-compositions-by-macronutrient>
+
+Original data comes from FAO, and kindly postprocessed by OutWorldInData members.
+Imporantly, carbonhydrates were deduced from total caloric supply.
+
+<http://www.fao.org/faostat/en/#data/FBSH>
+
+Sampling period: 1961-2013.
+
+Availability: local file in csv format.
+
+File name: daily-caloric-supply-derived-from-carbohydrates-protein-and-fat.csv
+
+
+## 2. Analysis
+
+### 2.1 Data preparation & cleaning
+
+Data is loaded from two CSV formatted files.
+
+```{r loading-csv-data, echo=FALSE}
+data_adults <- read.csv("share-of-adults-defined-as-obese.csv")
+names(data_adults)<- c("country", "country_code", "year", "y_obese")
+
+data_macronutrients <- read.csv("daily-caloric-supply-derived-from-carbohydrates-protein-and-fat.csv")
+names(data_macronutrients) <- c("country", "country_code", "year", "animal_proteins_supply", "plant_proteins_supply", "fat_supply", "carbonhydrates_supply")
+```
+
+```{r csv-data-cleanup, echo=FALSE}
+data_adults <- data_adults %>% select(-country_code)
+data_macronutrients <- data_macronutrients %>% select(-country_code)
+```
+
+Share of obese adults, snapshot:
+```{r csv-data-snapshot-1, echo=FALSE}
+head(data_adults) %>% knitr::kable()
+```
+
+Daily caloric supply [kcal], snapshot:
+```{r csv-data-snapshot-2, echo=FALSE}
+head(data_macronutrients) %>% knitr::kable()
+```
+
+Share of obese adults as uploaded from file: 
+```{r snapshot-obesity-data1, echo=FALSE}
+t(c(dim(data_adults)[1], 
+    min(data_adults$year), 
+    max(data_adults$year))) %>%
+    knitr::kable(col.names = c("Obesity Share (total records)", "First year", "Last year"))
+```
+
+Daily caloric supply as uploaded from file:
+```{r snapshot-obesity-data2, echo=FALSE}
+t(c(dim(data_macronutrients)[1], 
+    min(data_macronutrients$year), 
+    max(data_macronutrients$year))) %>%
+    knitr::kable(col.names = c("Macronutrients Supply (total records)", "First year", "Last year"))
+```
+
+Annually merged obesity data across all countries:
+```{r merged-obesity-data1, warning=FALSE, echo=FALSE}
+obesity <- inner_join(data_adults, data_macronutrients, by = c("country", "year"))
+obesity_countries_count <- as.numeric(
+  obesity %>% distinct(country) %>% summarize(n())
+  )
+names(obesity)[3] <- "y"
+
+t(c(dim(obesity)[1], 
+    obesity_countries_count,
+    min(obesity$year), 
+    max(obesity$year)
+    )) %>%
+    knitr::kable(col.names = c("Obesity data across countries (total records)", 
+    "Countries count", 
+    "First year", 
+    "Last year"))
+rm(obesity_countries_count)
+rm(data_adults, data_macronutrients)
+
+max_year <- max(obesity$year)
+
+#
+# add lagged obesity variable for future research
+# as well as changes in macronutrients supply
+obesity <- obesity %>% 
+  mutate(y_last = NA, 
+         d_animal_proteins_supply = NA, 
+         d_plant_proteins_supply = NA, 
+         d_fat_supply = NA, 
+         d_carbonhydrates_supply = NA)
+#
+# split all by country and process in calendar order,
+# assign differentials
+country_grouping_var <- obesity$country
+groups_by_country <- split(obesity, country_grouping_var)
+res_groups <- lapply(groups_by_country, function(x) {
+    res <- arrange(x, year)
+    res$y_last <- lag(res$y,1)
+    res$d_animal_proteins_supply <- res$animal_proteins_supply - lag(res$animal_proteins_supply,1)
+    res$d_plant_proteins_supply <- res$plant_proteins_supply - lag(res$plant_proteins_supply,1)
+    res$d_fat_supply <- res$fat_supply - lag(res$fat_supply,1)
+    res$d_carbonhydrates_supply <- res$carbonhydrates_supply - lag(res$carbonhydrates_supply,1)
+    res
+})
+rm(groups_by_country)
+# un-split into data frame again
+obesity_new <- do.call(rbind, res_groups)
+rm(res_groups)
+obesity <- obesity_new %>% filter(!is.na(y_last))
+rm(obesity_new)
+```
+
+### 2.2 Data partitioning
+
+Accordingly train and test set were randomly split 80/20.
+
+```{r data-paritioning-1, warning=FALSE, echo=FALSE}
+#
+# partition obesity data
+set.seed(11)
+test_index <- createDataPartition(obesity$y, times = 1, p = 0.2, list=FALSE)
+train_set <- obesity[-test_index,]
+test_set <- obesity[test_index,]
+
+# removing original data set,
+# preventing look-ahead bias
+rm(obesity)
+```
+
+After all, given combined obesity data and macronutrients supply data, the most recent year we can use for further research is `r max_year`.
+
+### 2.3 Data exploration
+
+#### Is there a commonality among countries observing obesity?
+
+Just looking at top 5 and lowest 5 countries per obesity share among adults the picture emerges.
+
+The most and the least obese societies observe upwards slope over the time. The least obese has very weak slope compared to the most dynamically obese countries.
+
+```{r explore-data1, warning=FALSE, echo=FALSE}
+top_countries <- train_set %>% filter(year == max_year) %>% select(y, country) %>% arrange(desc(y)) %>% head(5)
+
+bottom_countries <- train_set %>% filter(year == max_year) %>% select(y, country) %>% arrange(desc(y)) %>% tail(5)
+
+obese_extreme_countries <- c(
+  top_countries$country, 
+  bottom_countries$country)
+
+col_scale <- scale_colour_discrete(limits = unique(obese_extreme_countries))
+
+train_set %>% filter(country %in% obese_extreme_countries) %>%
+  ggplot(aes(year, y, color = country)) + 
+  geom_line() +
+  col_scale +
+  ggtitle("Highest and least obese countries - top & bottom 5")
+rm(col_scale, obese_extreme_countries)
+rm(top_countries, bottom_countries)
+```
+\
+
+Level of obesity just by pure glimpse at the extreme samples, suggests that past level of obesity impacts the future. It may encourage us to capture this autoregressive element if necessary.
+Here is another, more global snaphot of adults' obesity over the years.
+
+```{r explore-data2, warning=FALSE, echo=FALSE, fig.height=3.5}
+ggplot(train_set, aes(x=year, y=y, group=year)) +
+    geom_boxplot(fill = "red", alpha=0.5) +
+    ylab("") +
+    ggtitle("Training set obesity worldwide [share of obese people]")
+```
+\
+
+QQ plotting shows strong autocorrelation of obesity with its lagged variable.
+
+```{r explore-data-2-autocorrelation, warning=FALSE, echo=FALSE, fig.height=3.5}
+train_set %>% ggplot(aes(y_last, y, color = "red")) + 
+  geom_point() + 
+  geom_line() + 
+  xlab("") + 
+  ylab("") +
+  ggtitle("Autocorrelation: Obesity vs 1-year lagged obesity") +
+  theme(legend.position = "none")
+```
+\
+
+For that reason data set is enhanced with lagged variable:
+
+- last year obesity
+
+Yet, initial time-series starting in 1975, for almost all countries, 
+had to be reduced since previous year data cannot be obtained for 1975. 
+On the other hand filling up missing data, can cause biased results and criticism.
+Either when past obesity is zeroed or made to match 1975 levels.
+Limited loss of one point on the time-scale is acceptable.
+Auto-regressive enhancement will be included in modeling.
+
+#### How supply of macronutrients progressed over the years?
+
+One can note that not all macronutirents were in monotone supply.
+
+```{r explore-data3-macronutrients-over-years-1, warning=FALSE, echo=FALSE, fig.height=3}
+ggplot(train_set, aes(x=year, y=animal_proteins_supply, group=year)) +
+    geom_boxplot(fill = "green", alpha=0.4) +
+    ylab("") +
+    ggtitle("Animal proteins supply over the years [kcal/year/person]")
+```
+\
+
+```{r explore-data3-macronutrients-over-years-2, warning=FALSE, echo=FALSE, fig.height=3}
+ggplot(train_set, aes(x=year, y=plant_proteins_supply, group=year)) +
+    geom_boxplot(fill = "green", alpha=0.4) +
+    ylab("") +
+    ggtitle("Plant proteins supply over the years [kcal/year/person]")
+```
+\
+
+```{r explore-data3-macronutrients-over-years-3, warning=FALSE, echo=FALSE, fig.height=3}
+ggplot(train_set, aes(x=year, y=fat_supply, group=year)) +
+    geom_boxplot(fill = "green", alpha=0.4) +
+    ylab("") +
+    ggtitle("Fat supply over the years [kcal/year/person]")
+```
+\
+
+```{r explore-data3-macronutrients-over-years-4, warning=FALSE, echo=FALSE, fig.height=3}
+ggplot(train_set, aes(x=year, y=carbonhydrates_supply, group=year)) +
+    geom_boxplot(fill = "green", alpha=0.4) +
+    ylab("") +
+    ggtitle("Carbonhydrates supply over the years [kcal/year/person]")
+```
+\
+
+#### How representative is macronutrients data?
+
+Looking at correlation of macronutrients we observe that heavy correlated pair does indeed exist.
+Fat and animal proteins supply expose colinearity. 
+
+```{r explore-data4-macronutrients-correlations, echo=FALSE, fig.height=3, warning=FALSE}
+col_names <- c("animal proteins", "plant proteins", "fat", "carbonhydrates")
+obesity_slim <- train_set %>% select(-country, -year, -y, -y_last, 
+                                     -d_animal_proteins_supply, 
+                                     -d_plant_proteins_supply, 
+                                     -d_fat_supply, 
+                                     -d_carbonhydrates_supply)
+# run correlation on raw macronutrients only
+cor_macronutrients <- cor(obesity_slim) 
+rownames(cor_macronutrients) <- col_names
+cor_macronutrients %>% knitr::kable(
+  col.names = col_names,
+  align = 'c',
+  digits = 2)
+```
+
+Principal Component Analysis suggests that 3 major components could simplify the features data set, 
+but at the expense of portion of variability explained by macronutrient features.
+Had it been necessary, one could accept 92% variability. 
+
+```{r explore-data5-macronutrients-pca, warning=FALSE, echo=FALSE, fig.height=3.5}
+mn_pca <- prcomp(obesity_slim, scale = TRUE)
+
+varExplained <- tibble(
+  PC = c("PC1", "PC2", "PC3", "PC4"), 
+  Proportion_of_Variance = 100*mn_pca$sdev / sum(mn_pca$sdev)
+  )
+
+variance_labels <- as.character(str_glue("{format(varExplained$Proportion_of_Variance, digits = 4, nsmall = 2)} %"))
+
+varExplained %>% ggplot(aes(PC,Proportion_of_Variance, label = variance_labels)) +
+    geom_bar(stat = "identity", fill="blue", width = 0.7) +
+    ggtitle("Macronutrients PCA") +
+    ylab("") +
+    geom_text(nudge_y = 1, size = 3) +
+    theme_minimal()
+rm(obesity_slim, mn_pca) 
+```
+\
+
+However, compared to least obese countries, roughly 8% variability loss (PC4) could 
+render explanatory capacity for those societies where few obesity share points are observed. 
+Give that, it shouldn't be discarded easily for the sake of simplifying 
+the features model, ie. reliance on first 3 PCs.
+
+### 2.4 Regression methods
+
+For the task of regression of obesity share among adults, onto macronutrients, few non-linear methods were selected:
+
+- k-Nearest Neightbors,
+
+- General Additive Model using Splines,
+
+- General Additive Model using Loess,
+
+- Gradient Boosting.
+
+The last method, tree based modelling, was selected as the most advanced performer 
+with the aim of greatly flexible tuning effort, yet the hope of outperforming its 
+predecessors.
+
+#### Modelling variants 
+
+Linear representation of features used in regression study:
+
+(a) macronutrients (supply in [kcal/year/per person])
+
+$$y(i) = \beta_1 x_{plant.proteins}(i) + \beta_2 x_{animal.proteins}(i) + \beta_3 x_{fat}(i) + \beta_4 x_{carbonhydrates}(i)$$ 
+
+
+(b) autoregressive obesity & macronutrients
+
+Given discovered autocorrelation of dependant obesity variable, uses lagged variable.
+
+$$y(i) = \beta_0 y(i-1) + \beta_1 x_{plant.proteins}(i) + \beta_2 x_{animal.proteins}(i) + \beta_3 x_{fat}(i) + \beta_4 x_{carbonhydrates}(i)$$ 
+
+#### Error function
+
+Standard error function of RMSE is used for accuracy assessment for all methods in question.
+
+$$RMSE = \sqrt{\frac{1}{n} \sum_{i}(y(i) -\hat y(i))^2}$$
+
+```{r error-function, warning=FALSE, echo=FALSE}
+calculate_error = function(actual, predicted) {
+    sqrt(mean((actual-predicted)^2))
+}
+```
+
+
+
+
+
+
+#### 2.4.1 k-Nearest Neighbors method (knn)
+
+#### (a) features: macronutrients
+
+Variables comprise of macronutrients only.
+Below is the cross-validated training output where number of neighbors was limited within the range [1,11].
+
+```{r method-1-train, warning=FALSE, echo=FALSE}
+set.seed(41)
+train_knn <- train(y ~ animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+                  data = train_set,
+                  method = "knn",
+                  trControl = trainControl(method = "cv", number = 5),
+                  tuneGrid = expand.grid(k = seq(1, 11, by = 1)))
+
+plot(train_knn)
+```
+\
+
+k-NN's best result is identified:
+
+```{r method-1-results, warning=FALSE, echo=FALSE}
+bestfit_knn <- train_knn$results[which.min(train_knn$results$RMSE),]
+rownames(bestfit_knn) <- "Best fit"
+bestfit_knn %>% knitr::kable()
+train_1_knn <- train_knn
+rm(train_knn)
+```
+
+Notably poor statistics of the fit (low R^2 and high average error) render it unsatisfactory.
+
+#### (b) features: auto-regressive obesity & macronutrients
+
+Here, macronutrient variables and lagged dependant variable are applied.
+Similarly 5-fold cross-validation is used in training.
+
+```{r method-1-ar-train, warning=FALSE, echo=FALSE}
+set.seed(41)
+train_knn <- train(y ~ y_last + animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+                  data = train_set,
+                  method = "knn",
+                  trControl = trainControl(method = "cv", number = 5),
+                  tuneGrid = expand.grid(k = seq(1, 11, by = 1)))
+
+plot(train_knn)
+```
+\
+
+k-NN's best result is identified, with moderately improved fit (roughly 1% obesity share on average):
+
+```{r method-1-ar-results, warning=FALSE, echo=FALSE}
+bestfit_knn_ar1 <- train_knn$results[which.min(train_knn$results$RMSE),]
+rownames(bestfit_knn_ar1) <- "Best fit"
+bestfit_knn_ar1 %>% knitr::kable()
+train_2_knn <- train_knn
+rm(train_knn)
+```
+
+
+
+
+#### 2.4.2 Generalized Additive Model using Splines
+#### (a) features: macronutrients
+
+Splines function for this type of task might seem an unusual attempt, 
+to capture so much data in multiple dimensions.
+Cross-valided training is conducted by increasing degrees of freedom in range [1,31].
+
+```{r method-2-train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+train_splines <- train(y ~ animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+                    data = train_set,
+                    method = "gamSpline",
+                    trControl = trainControl(method = "cv", number = 5),
+                    tuneGrid = expand.grid(
+                      df = seq(1,25,by = 1)
+                      ),
+                    verbose = FALSE)
+
+plot(train_splines)
+```
+\
+
+GAM splines best-fit is identified:
+
+```{r method-2-results, warning=FALSE, echo=FALSE}
+bestfit_splines_ar1 <- train_splines$results[which.min(train_splines$results$RMSE),]
+rownames(bestfit_splines_ar1) <- "Best fit"
+bestfit_splines_ar1 %>% knitr::kable()
+train_1_splines <- train_splines
+rm(train_splines)
+```
+
+#### (b) features: auto-regressive obesity & macronutrients
+
+Lagged dependant obesity variable is added to the set of independent variables.
+5-fold cross-validation is conducted.
+
+Splines function for this type of task might seem an unusual attempt, 
+to capture so much data in multiple dimensions.
+Cross-valided training is conducted by increasing degrees of freedom in range [1,31].
+
+```{r method-2-ar-train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+train_splines <- train(y ~ y_last + animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+                    data = train_set,
+                    method = "gamSpline",
+                    trControl = trainControl(method = "cv", number = 5),
+                    tuneGrid = expand.grid(
+                      df = seq(1,25,by = 1)
+                      ),
+                    verbose = FALSE)
+
+plot(train_splines)
+```
+\
+
+GAM splines best-fit is identified, which bring tremendous improvement of 
+explanatory power (R^2), and average error below 1 % share of adults.
+
+```{r method-2-ar-results, warning=FALSE, echo=FALSE}
+bestfit_splines <- train_splines$results[which.min(train_splines$results$RMSE),]
+rownames(bestfit_splines) <- "Best fit"
+bestfit_splines %>% knitr::kable()
+train_2_splines <- train_splines
+rm(train_splines)
+```
+
+
+
+
+#### 2.4.3 Generalized Additive Model using Loess 
+#### (a) features: macronutrients 
+
+Loess is a locally weighted regression method, making it more flexible 
+than linear regression.
+Both degrees of freedom and span are costly to be calibrated.
+Unstable "gamLoess" implementation prevented and variations of degree parameters.
+Consequently degree was set to 1, as in the default configuration of the method.
+Important to note that larger span means smoother fit:
+- each neighborhood consisting between 10% and 80% of the observations
+
+```{r method-3-train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+train_loess <- train(
+  y ~ animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+                    data = train_set,
+                    method = "gamLoess",
+                    trControl = trainControl(method = "cv", number = 5),
+                    tuneGrid = expand.grid(
+                      span = seq(0.10, 0.80, len = 7), degree = 1
+                      ),
+                    verbose = FALSE)
+plot(train_loess)
+```
+\
+
+GAM loess best-fit is identified:
+
+```{r method-3-results, warning=FALSE, echo=FALSE}
+bestfit_loess <- train_loess$results[which.min(train_loess$results$RMSE),]
+rownames(bestfit_loess) <- "Best fit"
+bestfit_loess %>% knitr::kable()
+train_1_loess <- train_loess
+rm(bestfit_loess)
+```
+
+That outcome is hardly explanatory, given the lowest R^2 and very poor average error,
+which undermines applicability to countries where share of adults is less
+than the RMSE achieved by this method & features selected. 
+
+#### (b) features: auto-regressive obesity & macronutrients
+
+Here, the Loess method is provided the lagged obesity apart from 
+all macronutrient variables.
+Similarly 5-fold cross-validation is applied.
+
+```{r method-3-ar train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+train_loess <- train(
+  y ~ y_last + animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+                    data = train_set,
+                    method = "gamLoess",
+                    trControl = trainControl(method = "cv", number = 5),
+                    tuneGrid = expand.grid(
+                      span = seq(0.10, 0.80, len = 7), degree = 1
+                      ),
+                    verbose = FALSE)
+plot(train_loess)
+```
+\
+
+GAM loess best-fit is identified:
+
+```{r method-3-ar-results, warning=FALSE, echo=FALSE}
+bestfit_loess <- train_loess$results[which.min(train_loess$results$RMSE),]
+rownames(bestfit_loess) <- "Best fit"
+bestfit_loess %>% knitr::kable()
+train_2_loess <- train_loess
+rm(bestfit_loess)
+```
+
+
+
+#### 2.4.4 Gradient Boosting Machines
+
+Gradient boosted machines (GBMs) are powerful algorithms, building ensemble 
+of shallow but weak successive trees, that learn from their predecessors.
+So each tree learns and improves from the previous tree. Such powerful ensemble 
+carries similarity to random forest concept. However the latter relies on the 
+independence of the deep trees that were built. 
+
+Boosting unlike bagging, improves the bias (often over-emphasizing outliers), which 
+may lead to over-fitting. Notion of weakness in boosted learning comes from 
+ability to always learn anything, with the outcome better than chance. 
+Though, the memory and compution intensive with large number of trees (thousands),
+often finds itself superior against other methods.
+
+#### (a) features: macronutrients 
+
+Gradient boosting with Gaussian loss function was applied.
+Required tuning evolved around 3 parameters:
+
+- interaction depth (beyond the additive interaction at depth 1),
+
+- number of trees (empirically increased beyond 1000),
+
+- shrinkage (learning rate, empirically narrowed to contrast results' evolution)
+
+Rather sadly, the costly method is not thread-safe to permit parallel execution,
+and hence speeding up results recovery. This is particularly an impediment since 
+cross-validation is used in training combined with wide range of tress and interactions.
+
+```{r method-4-train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+
+#
+# once the "gbm" package supports parallel execution:
+# - consider multi-core processing
+# - afford half of the CPU power available:
+#     cpuCoresWanted <- parallel::detectCores() / 2
+
+gbm_grid = expand.grid(interaction.depth = c(1, 2, 3, 4),
+                       n.trees = seq(100, 2500, 100),
+                       shrinkage = c(0.1, 0.5),
+                       n.minobsinnode = 10
+                       )
+
+train_gbm <- train(
+    y ~ animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+    data = train_set,
+    method = "gbm",
+    trControl = trainControl(method = "cv", number = 5),
+    tuneGrid = gbm_grid, 
+    verbose = FALSE)
+
+ggplot(train_gbm)
+```
+\
+
+Boosted best-fit is identified with features' influence report:
+
+```{r method-4-results, warning=FALSE, echo=FALSE}
+besttune_gbm <- train_gbm$bestTune 
+rownames(besttune_gbm) <- "Best fit"
+besttune_gbm %>% knitr::kable()
+bestfit_gbm <- train_gbm$results[which.min(train_gbm$results$RMSE),] %>% 
+  select(RMSE, Rsquared, MAE, RMSESD, RsquaredSD)
+rownames(bestfit_gbm) <- "Best residuals"
+bestfit_gbm %>% knitr::kable()
+train_1_gbm <- train_gbm
+rm(bestfit_gbm, besttune_gbm)
+
+# prepare relative influence of variables based on final model trained
+res <- tibble(variable = train_gbm$finalModel$var.names, influence = relative.influence(train_gbm$finalModel))
+res$influence <- res$influence * 100/ sum(res$influence) 
+res$variable <- str_replace_all(res$variable, "[_]", " ")
+influence_labels <- as.character(str_glue("{format(res$influence, digits = 4, nsmall = 2)} %"))
+
+res %>% ggplot(aes(reorder(variable, -influence), influence, label = influence_labels)) +
+    geom_bar(stat = "identity", fill="green", width = 0.7) +
+    ggtitle("Relative Influence in Gradient Boosted model") +
+    ylab("") +
+    xlab("") +
+    geom_text(nudge_y = 1, size = 3) +
+    theme_minimal()
+rm(res,influence_labels) 
+```
+\
+
+RMSE as well as R^2 are not impressive, overshadowing observed obesity share. 
+
+#### (b) features: auto-regressive obesity & macronutrients
+
+5-fold cross-validation is applied as before, 4 tuning parameters. 
+
+```{r method-4-ar train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+
+train_gbm <- train(
+    y ~ y_last + animal_proteins_supply + plant_proteins_supply + fat_supply + carbonhydrates_supply,
+    data = train_set,
+    method = "gbm",
+    trControl = trainControl(method = "cv", number = 5),
+    tuneGrid = gbm_grid,
+    verbose = FALSE)
+
+ggplot(train_gbm)
+```
+\
+
+Boosted regression's best-fit parameters and residuals:
+
+```{r method-4-ar-results, warning=FALSE, echo=FALSE}
+besttune_gbm <- train_gbm$bestTune 
+rownames(besttune_gbm) <- "Best fit"
+besttune_gbm %>% knitr::kable()
+bestfit_gbm <- train_gbm$results[which.min(train_gbm$results$RMSE),] %>% 
+  select(RMSE, Rsquared, MAE, RMSESD, RsquaredSD)
+rownames(bestfit_gbm) <- "Best residuals"
+bestfit_gbm %>% knitr::kable()
+train_2_gbm <- train_gbm
+rm(bestfit_gbm, besttune_gbm)
+
+# prepare relative influence of variables based on final model trained
+res <- tibble(variable = train_gbm$finalModel$var.names, influence = relative.influence(train_gbm$finalModel))
+res$influence <- res$influence * 100/ sum(res$influence) 
+res$variable <- str_replace_all(res$variable, "[_]", " ")
+influence_labels <- as.character(str_glue("{format(res$influence, digits = 4, nsmall = 1)} %"))
+
+res %>% ggplot(aes(reorder(variable, -influence), influence, label = influence_labels)) +
+    geom_bar(stat = "identity", fill="green", width = 0.7) +
+    ggtitle("Relative Influence in Gradient Boosted model") +
+    ylab("") +
+    xlab("") +
+    geom_text(nudge_y = 1, size = 3) +
+    theme_minimal()
+rm(res,influence_labels) 
+```
+\
+
+Once again, as for other methods, when auto-regressive model construction is 
+employed, the residuals and explanatory power improve tremendously.
+
+#### Extended modelling variants 
+
+Linear representation of features used in regression study:
+
+(c) macronutrients (supply in [kcal/year/per person])
+
+$$y(i) = \beta_1 \Delta x_{plant.proteins}(i) + \beta_2 \Delta x_{animal.proteins}(i) + \beta_3 \Delta x_{fat}(i) + \beta_4 \Delta x_{carbonhydrates}(i)$$ 
+
+
+(d) autoregressive obesity & macronutrients
+
+Given discovered autocorrelation of dependant obesity variable, uses lagged variable.
+
+$$y(i) = \beta_0 y(i-1) + \beta_1 \Delta x_{plant.proteins}(i) + \beta_2 \Delta x_{animal.proteins}(i) + \beta_3 \Delta x_{fat}(i) + \beta_4 \Delta x_{carbonhydrates}(i)$$ 
+
+#### (c) features: change in macronutrients 
+
+```{r method-4c-train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+
+gbm_grid = expand.grid(interaction.depth = c(1, 2, 3, 4),
+                       n.trees = seq(100, 2500, 100),
+                       shrinkage = c(0.1, 0.5),
+                       n.minobsinnode = 10
+                       )
+
+train_gbm <- train(
+    y ~ d_animal_proteins_supply + d_plant_proteins_supply + d_fat_supply + d_carbonhydrates_supply,
+    data = train_set,
+    method = "gbm",
+    trControl = trainControl(method = "cv", number = 5),
+    tuneGrid = gbm_grid, 
+    verbose = FALSE)
+
+ggplot(train_gbm)
+```
+\
+
+Boosted best-fit is identified:
+
+```{r method-4c-results, warning=FALSE, echo=FALSE}
+besttune_gbm <- train_gbm$bestTune 
+rownames(besttune_gbm) <- "Best fit"
+besttune_gbm %>% knitr::kable()
+bestfit_gbm <- train_gbm$results[which.min(train_gbm$results$RMSE),] %>% 
+  select(RMSE, Rsquared, MAE, RMSESD, RsquaredSD)
+rownames(bestfit_gbm) <- "Best residuals"
+bestfit_gbm %>% knitr::kable()
+train_3_gbm <- train_gbm
+rm(bestfit_gbm, besttune_gbm)
+
+# prepare relative influence of variables based on final model trained
+res <- tibble(variable = train_gbm$finalModel$var.names, influence = relative.influence(train_gbm$finalModel))
+res$influence <- res$influence * 100/ sum(res$influence) 
+res$variable <- str_replace_all(res$variable, "d_", "delta ")
+res$variable <- str_replace_all(res$variable, "[_]", " ")
+res$variable <- str_replace_all(res$variable, "supply", "")
+influence_labels <- as.character(str_glue("{format(res$influence, digits = 4, nsmall = 2)} %"))
+
+res %>% ggplot(aes(reorder(variable, -influence), influence, label = influence_labels)) +
+    geom_bar(stat = "identity", fill="green", width = 0.7) +
+    ggtitle("Relative Influence in Gradient Boosted model") +
+    ylab("") +
+    xlab("") +
+    geom_text(nudge_y = 1, size = 3) +
+    theme_minimal()
+rm(res,influence_labels) 
+```
+\
+
+RMSE as well as R^2 are not impressive, overshadowing observed obesity share. 
+
+#### (d) features: auto-regressive obesity & change in macronutrients
+
+5-fold cross-validation is applied as before with 4 tuning parameters. 
+
+```{r method-4d-ar train, warning=FALSE, echo=FALSE, results='hide'}
+set.seed(41)
+
+train_gbm <- train(
+    y ~ y_last + d_animal_proteins_supply + d_plant_proteins_supply + d_fat_supply + d_carbonhydrates_supply,
+    data = train_set,
+    method = "gbm",
+    trControl = trainControl(method = "cv", number = 5),
+    tuneGrid = gbm_grid,
+    verbose = FALSE)
+
+ggplot(train_gbm)
+```
+\
+
+Boosted regression's best-fit parameters and residuals:
+
+```{r method-4d-ar-results, warning=FALSE, echo=FALSE}
+besttune_gbm <- train_gbm$bestTune 
+rownames(besttune_gbm) <- "Best fit"
+besttune_gbm %>% knitr::kable()
+bestfit_gbm <- train_gbm$results[which.min(train_gbm$results$RMSE),] %>% 
+  select(RMSE, Rsquared, MAE, RMSESD, RsquaredSD)
+rownames(bestfit_gbm) <- "Best residuals"
+bestfit_gbm %>% knitr::kable()
+train_4_gbm <- train_gbm
+rm(bestfit_gbm, besttune_gbm)
+
+# prepare relative influence of variables based on final model trained
+res <- tibble(variable = train_gbm$finalModel$var.names, influence = relative.influence(train_gbm$finalModel))
+res$influence <- res$influence * 100/ sum(res$influence) 
+res$variable <- str_replace_all(res$variable, "d_", "delta ")
+res$variable <- str_replace_all(res$variable, "[_]", " ")
+res$variable <- str_replace_all(res$variable, "supply", "")
+influence_labels <- as.character(str_glue("{format(res$influence, digits = 4, nsmall = 1)} %"))
+
+res %>% ggplot(aes(reorder(variable, -influence), influence, label = influence_labels)) +
+    geom_bar(stat = "identity", fill="green", width = 0.7) +
+    ggtitle("Relative Influence in Gradient Boosted model") +
+    ylab("") +
+    xlab("") +
+    geom_text(nudge_y = 1, size = 3) +
+    theme_minimal()
+rm(res,influence_labels) 
+```
+\
+
+## 3. Results
+
+Models comparison
+
+Various methods and feature models are tested now, pretrained using 
+cross-validation across the board. Their performance out-of-sample is compared 
+with training set RMSE figures.
+
+```{r testing-results, warning=FALSE, echo=FALSE}
+
+#
+# function combining training and test set RMSE
+#
+method_test_run <- function(method_label, model_label, trained_method, 
+                         train_set_selection, test_set_selection) {
+  #
+  # test outcome
+  test_predictions <- predict(trained_method, test_set_selection)
+  test_error <- calculate_error(test_set_selection$y, test_predictions)
+  #
+  # training outcome
+  training_predictions <- predict(trained_method, train_set_selection) 
+  training_error <- calculate_error(train_set_selection$y, training_predictions)
+  #
+  # error change between training set and test set
+  # always expecting under-performance out-of-sample, 
+  # as a consequence of the over-fitting 
+  error_change <- ((test_error / training_error) - 1) * 100
+  tibble(method = method_label, 
+         model = model_label, 
+         test_error = test_error, 
+         training_error = training_error,
+         test_error_change = error_change)
+}
+
+results <- tibble()
+results <- rbind(results, 
+                 method_test_run("kNN", "macronutrients", train_1_knn, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("kNN", "AR(1) & macronutrients", train_2_knn, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GAM with Splines", "macronutrients", train_1_splines, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GAM with Splines", "AR(1) & macronutrients", train_2_splines, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GAM with Loess", "macronutrients", train_1_loess, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GAM with Loess", "AR(1) & macronutrients", train_2_loess, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GBM", "macronutrients", train_1_gbm, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GBM", "AR(1) & macronutrients", train_2_gbm, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GBM", "macronutrients change", train_3_gbm, train_set, test_set))
+results <- rbind(results, 
+                 method_test_run("GBM", "AR(1) & macronutrients change", train_4_gbm, train_set, test_set))
+
+results %>% knitr::kable(col.names = c("Method", "Features", "RMSE(test)", "RMSE(training)", "% Change"))
+```
+
+General Additive Models, both using Splines and Loess, appear to provide the best results among all the methods:
+
+- out-of-sample perfromance was reduced by around 11% only (RMSE),
+
+- training set and test set RMSE was below one point of the dependant variable (obesity share).
+
+There was an attempt to contrast regression methods with different feature models:
+
+- auto-regressive model of obesity proved to outperform the others
+
+Gradient Boosted Machines haven't produced the expected results:
+
+- RMSEs were comparable with GAM modeling (below 1 point at best),
+
+- yet performance on the test set was down by 140% and 63% when auto-regressive obesity was tested.
+
+
+## 4. Conclusions
+
+
+Summary:
+
+- buidling global model of obesity share proved to be a challenging task,
+
+- selection of macronutrient features and their form had little impact (supply vs 1st difference change),
+
+- performance of the methods was important, but of secondary importance, 
+
+- fundamental inclusion of lagged obesity made the biggest impact on out-of-sample performance,
+
+- k-NN method when applied to non-classification task performed poorly, compared with GAM's and GBM's type methods,
+
+- Stochastic Gradient Boosting, being prone of over-fitting experienced big drop in performance on test set.
+
+
+
+Limitations of the study:
+
+- limited number of features, mainly macronutrients,
+
+- country specific effects were not tested (hindered by small sample availability per country),
+
+- available CPU power didn't permit employment of memory and CPU intensive methods (Neural Networks),
+
+- no residuals study was conducted for each of the methods/model pairs of research.
+
+
+
+Potential for the future:
+
+- obesity research conducted with macronutrients exclusively is not satisfactory, further  exploration is needed,
+
+- different number of features should be mined and explored (eg. economic variables, demographic structure, and actual food products),
+
+- residuals analysis could be employed: heterscedasticity and serial correlation testing, during model development, 
+
+- due to small sample size per country (<100) and total sample size (6k) bootstapping outght to be considered,
+
+- future research can be conducted with limited number of methods, given the relative success of General Additive Modeling in this study.
+
+
+
